@@ -30,6 +30,14 @@ tagged or released to PyPI.
 - Python 3.13 added to the CI matrix, and declared in the classifiers.
 
 ### Added
+- `--keep-query`: keeps query strings instead of stripping them, for sites
+  that address distinct pages through parameters (`?id=`, `?page=`).
+  Parameters are sorted so `?a=1&b=2` and `?b=2&a=1` are one URL.
+- `--fail-on-removed` and `--fail-on-gaps`: exit `3` when a diff shows pages
+  have disappeared, or when coverage verification finds unexplained gaps.
+  `--diff-against` and `--verify` previously always exited `0`, so a
+  scheduled crawl could report a problem but never fail a build. `3` rather
+  than `2` keeps a tripped gate distinguishable from an argparse usage error.
 - Installable CLI: `pyproject.toml` with a `sitemap-generator` console_scripts
   entry point (`pip install .` / `pipx install .`), instead of requiring a
   git clone. `crawl_sitemap.py` at the repo root remains as a

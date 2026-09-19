@@ -12,6 +12,7 @@ import http.server
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import threading
 import unittest
@@ -697,3 +698,116 @@ class LiveProgressTests(_LocalServerTestCase):
         payload = cli.run_scan(args, self.base, self.host)
         self.assertIsNotNone(cli.CURRENT_STATE)
         self.assertEqual(len(cli.CURRENT_STATE.found), payload["count"])
+
+
+class KeepQueryTests(unittest.TestCase):
+    """Query strings are dropped by default because faceted search and
+    pagination multiply one page into thousands of URLs; --keep-query is for
+    sites that genuinely address distinct pages that way."""
+
+    def tearDown(self):
+        cli._KEEP_QUERY = False
+
+    def test_query_dropped_by_default(self):
+        self.assertEqual(cli.normalize("https://e.com/p?page=2"), "https://e.com/p")
+
+    def test_query_kept_when_asked(self):
+        self.assertEqual(cli.normalize("https://e.com/p?page=2", keep_query=True),
+                         "https://e.com/p?page=2")
+
+    def test_parameters_are_sorted_so_reorderings_are_one_url(self):
+        a = cli.normalize("https://e.com/p?b=2&a=1", keep_query=True)
+        b = cli.normalize("https://e.com/p?a=1&b=2", keep_query=True)
+        self.assertEqual(a, b)
+
+    def test_fragment_still_stripped_and_blank_values_kept(self):
+        self.assertEqual(cli.normalize("https://e.com/p?a=#frag", keep_query=True),
+                         "https://e.com/p?a=")
+
+    def test_module_flag_is_respected_when_not_passed_explicitly(self):
+        cli._KEEP_QUERY = True
+        self.assertEqual(cli.normalize("https://e.com/p?x=1"), "https://e.com/p?x=1")
+
+    def test_canonical_url_threads_the_flag_through(self):
+        self.assertEqual(cli.canonical_url("https://www.e.com/p?x=1", "e.com", keep_query=True),
+                         "https://e.com/p?x=1")
+        self.assertEqual(cli.canonical_url("https://www.e.com/p?x=1", "e.com"),
+                         "https://e.com/p")
+
+
+class ExitCodeTests(_LocalServerTestCase):
+    """The CI-gate flags are only useful if the process actually exits
+    non-zero: --diff-against previously reported removals and still exited 0,
+    so a scheduled crawl could never fail a build."""
+
+    def _run(self, *argv):
+        full = ["site-spider", self.base, "--delay", "0", "--allow-private-ips", *argv]
+        with patch.object(sys, "argv", full):
+            return cli.main()
+
+    def tearDown(self):
+        cli._KEEP_QUERY = False
+
+    def test_clean_crawl_exits_ok(self):
+        self.assertEqual(self._run("--mode", "crawl"), cli.EXIT_OK)
+
+    def test_removed_url_trips_the_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = os.path.join(tmp, "old.json")
+            with open(snapshot, "w", encoding="utf-8") as f:
+                json.dump({"urls": [f"{self.base}/", f"{self.base}/since-deleted"]}, f)
+            code = self._run("--mode", "crawl", "--diff-against", snapshot,
+                             "--fail-on-removed")
+        self.assertEqual(code, cli.EXIT_GATE_TRIPPED)
+
+    def test_unchanged_snapshot_does_not_trip_the_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = os.path.join(tmp, "old.json")
+            first = cli.run_scan(
+                argparse.Namespace(mode="crawl", max_pages=50, max_depth=6, delay=0.0,
+                                   workers=2, user_agent="t", state=None, fresh=False,
+                                   verify=False, max_duration=None,
+                                   allow_private_ips=True, keep_query=False),
+                self.base, self.host)
+            with open(snapshot, "w", encoding="utf-8") as f:
+                json.dump(first, f)
+            code = self._run("--mode", "crawl", "--diff-against", snapshot,
+                             "--fail-on-removed")
+        self.assertEqual(code, cli.EXIT_OK)
+
+    def test_diff_without_the_flag_still_exits_ok(self):
+        # The gate must be opt-in: plain --diff-against stays a report.
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = os.path.join(tmp, "old.json")
+            with open(snapshot, "w", encoding="utf-8") as f:
+                json.dump({"urls": [f"{self.base}/", f"{self.base}/since-deleted"]}, f)
+            code = self._run("--mode", "crawl", "--diff-against", snapshot)
+        self.assertEqual(code, cli.EXIT_OK)
+
+    def test_unreached_links_trip_the_gaps_gate(self):
+        # --max-depth 1 stops before /apply/domestic, which /apply links to,
+        # so that link is left unaccounted for.
+        code = self._run("--mode", "crawl", "--max-depth", "1", "--fail-on-gaps")
+        self.assertEqual(code, cli.EXIT_GATE_TRIPPED)
+
+    def test_full_crawl_has_no_gaps(self):
+        self.assertEqual(self._run("--mode", "crawl", "--fail-on-gaps"), cli.EXIT_OK)
+
+    def test_fail_on_gaps_implies_verify(self):
+        # Proven by the report actually being produced, not by exit code:
+        # without the implication the gate would silently never fire.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "out.json")
+            self._run("--mode", "crawl", "--fail-on-gaps", "--json", out)
+            with open(out, encoding="utf-8") as f:
+                payload = json.load(f)
+        self.assertIn("verify", payload)
+
+    def test_gate_code_is_distinct_from_argparse_usage_error(self):
+        # argparse exits 2 on a usage error; a tripped gate must not collide
+        # with it or CI cannot tell the two apart.
+        self.assertNotEqual(cli.EXIT_GATE_TRIPPED, 2)
+        with patch.object(sys, "argv", ["site-spider", self.base, "--fail-on-removed"]), \
+                self.assertRaises(SystemExit) as cm:
+            cli.main()
+        self.assertEqual(cm.exception.code, 2)
