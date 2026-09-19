@@ -10,6 +10,12 @@ and this project uses [Semantic Versioning](https://semver.org/).
 Nothing published yet — everything below has landed on `main` but hasn't been
 tagged or released to PyPI.
 
+### Changed
+- **Renamed to `sitespider`.** The old name was generic and already taken on
+  PyPI, so it could never have been published under it. The Python package,
+  the console script and the default User-Agent are all `sitespider` now;
+  `crawl_sitemap.py` still works for anyone running from a checkout.
+
 ### Added
 - Installable CLI: `pyproject.toml` with a `sitemap-generator` console_scripts
   entry point (`pip install .` / `pipx install .`), instead of requiring a

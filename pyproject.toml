@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sitemap-generator"
+name = "sitespider"
 version = "0.1.0"
-description = "Crawl a website and generate a verified, interactive sitemap"
+description = "Crawl a website and map what is really there, then cross-check it against the site's own sitemap.xml"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -17,16 +17,16 @@ dev = ["ruff==0.16.3"]
 js = ["playwright>=1.40"]
 
 [project.urls]
-Homepage = "https://github.com/amithia/sitemap-generator"
+Homepage = "https://github.com/amithia/sitespider"
 
 [project.scripts]
-sitemap-generator = "sitemap_generator.cli:main"
+sitespider = "sitespider.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["sitemap_generator*"]
+include = ["sitespider*"]
 
 [tool.setuptools.package-data]
-sitemap_generator = ["templates/*.html"]
+sitespider = ["templates/*.html"]
 
 [tool.ruff]
 target-version = "py310"
