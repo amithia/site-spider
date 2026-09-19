@@ -542,3 +542,158 @@ class JSRendererTests(_LocalServerTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HostAliasTests(unittest.TestCase):
+    """Apex and www are the same site: treating them as different hosts made
+    the crawler classify a redirected site's own pages as offsite and find
+    nothing at all."""
+
+    def test_apex_and_www_are_the_same_host(self):
+        self.assertTrue(cli.same_host("https://www.example.com/a", "example.com"))
+        self.assertTrue(cli.same_host("https://example.com/a", "www.example.com"))
+
+    def test_unrelated_hosts_still_differ(self):
+        self.assertFalse(cli.same_host("https://other.example.com/a", "example.com"))
+        self.assertFalse(cli.same_host("https://example.org/a", "example.com"))
+
+    def test_redirected_page_is_not_treated_as_offsite(self):
+        # The original bug: base example.com 301s to www.example.com, every
+        # fetch landed "offsite", and the crawl reported zero URLs.
+        final_url = cli.canonical_url("https://www.example.com/about", "example.com")
+        self.assertFalse(not cli.same_host(final_url, "example.com"))
+
+    def test_canonical_url_reanchors_alias_onto_the_crawled_host(self):
+        self.assertEqual(cli.canonical_url("https://www.example.com/a", "example.com"),
+                         "https://example.com/a")
+        self.assertEqual(cli.canonical_url("https://example.com/a", "www.example.com"),
+                         "https://www.example.com/a")
+
+    def test_canonical_url_leaves_other_hosts_alone(self):
+        self.assertEqual(cli.canonical_url("https://other.example/a", "example.com"),
+                         "https://other.example/a")
+
+    def test_canonical_url_still_normalizes(self):
+        self.assertEqual(cli.canonical_url("https://www.example.com/a/?x=1#f", "example.com"),
+                         "https://example.com/a")
+
+
+class ResolveBaseTests(unittest.TestCase):
+    """The base URL's redirects decide which host is actually crawled, so
+    later requests skip the redirect hop and sitemap.xml carries the
+    canonical host."""
+
+    @staticmethod
+    def _fetch_landing(final_url, status=200):
+        return lambda url, ua, *a, **k: (b"<html></html>", status, {}, final_url)
+
+    def test_adopts_the_host_the_base_redirects_to(self):
+        with patch.object(cli, "fetch", self._fetch_landing("https://www.example.com/")):
+            base, host = cli.resolve_base("https://example.com", "example.com", "ua")
+        self.assertEqual((base, host), ("https://www.example.com", "www.example.com"))
+
+    def test_keeps_base_when_no_redirect_happens(self):
+        with patch.object(cli, "fetch", self._fetch_landing("https://example.com/")):
+            base, host = cli.resolve_base("https://example.com", "example.com", "ua")
+        self.assertEqual((base, host), ("https://example.com", "example.com"))
+
+    def test_refuses_to_follow_a_redirect_to_a_different_site(self):
+        with patch.object(cli, "fetch", self._fetch_landing("https://elsewhere.test/")):
+            base, host = cli.resolve_base("https://example.com", "example.com", "ua")
+        self.assertEqual((base, host), ("https://example.com", "example.com"))
+
+    def test_keeps_base_when_the_probe_fails(self):
+        with patch.object(cli, "fetch", lambda *a, **k: (None, 0, {}, "https://example.com/")):
+            base, host = cli.resolve_base("https://example.com", "example.com", "ua")
+        self.assertEqual((base, host), ("https://example.com", "example.com"))
+
+
+class MultipleSitemapsTests(unittest.TestCase):
+    """robots.txt may advertise several sitemaps; stopping at the first one
+    that returned anything silently dropped the rest."""
+
+    ROBOTS = (b"User-agent: *\n"
+              b"Sitemap: https://example.com/sitemap-pages.xml\n"
+              b"Sitemap: https://example.com/sitemap-posts.xml\n")
+
+    @staticmethod
+    def _sitemap(*paths):
+        urls = "".join(f"<url><loc>https://example.com{p}</loc></url>" for p in paths)
+        return ('<?xml version="1.0"?><urlset '
+                'xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                f"{urls}</urlset>").encode()
+
+    def _fetch(self, url, ua, *a, **k):
+        if url.endswith("/robots.txt"):
+            return self.ROBOTS, 200, {}, url
+        if url.endswith("sitemap-pages.xml"):
+            return self._sitemap("/about"), 200, {}, url
+        if url.endswith("sitemap-posts.xml"):
+            return self._sitemap("/blog/one", "/blog/two"), 200, {}, url
+        return None, 404, {}, url
+
+    def test_every_sitemap_listed_in_robots_is_parsed(self):
+        with patch.object(cli, "fetch", self._fetch):
+            urls = cli.collect_from_sitemaps("https://example.com", "example.com", "ua")
+        self.assertEqual(urls, {"https://example.com/about",
+                                "https://example.com/blog/one",
+                                "https://example.com/blog/two"})
+
+    def test_falls_back_to_well_known_paths_when_robots_lists_none(self):
+        def fetch(url, ua, *a, **k):
+            if url.endswith("/robots.txt"):
+                return b"User-agent: *\n", 200, {}, url
+            if url.endswith("/sitemap.xml"):
+                return self._sitemap("/about"), 200, {}, url
+            return None, 404, {}, url
+        with patch.object(cli, "fetch", fetch):
+            urls = cli.collect_from_sitemaps("https://example.com", "example.com", "ua")
+        self.assertEqual(urls, {"https://example.com/about"})
+
+
+class TemplateEscapingTests(unittest.TestCase):
+    """A crawled page's URLs land in the map's HTML. They are untrusted
+    input: a URL carrying a quote must not break out of an href attribute."""
+
+    @classmethod
+    def setUpClass(cls):
+        from importlib import resources
+        cls.template = resources.files("sitemap_generator").joinpath(
+            "templates", "chart.html").read_text(encoding="utf-8")
+
+    def test_quotes_survive_normalization_and_so_must_be_escaped(self):
+        # Establishes the threat this guards: nothing upstream strips these.
+        hostile = 'https://e.com/a" onmouseover="alert(1)'
+        self.assertIn('"', cli.normalize(hostile))
+        links = cli.outbound_links("https://e.com/", [(hostile, "x")], "e.com")
+        self.assertIn('"', links[0]["url"])
+
+    def test_esc_escapes_quotes_and_angle_brackets(self):
+        self.assertRegex(self.template, r"function esc\(s\)\{[^}]*&quot;")
+        self.assertRegex(self.template, r"function esc\(s\)\{[^}]*&#39;")
+        self.assertRegex(self.template, r"function esc\(s\)\{[^}]*&gt;")
+
+    def test_every_href_interpolation_goes_through_hrefAttr(self):
+        raw = [line.strip() for line in self.template.splitlines()
+               if 'href="${' in line and "hrefAttr(" not in line]
+        self.assertEqual(raw, [], f"unescaped URL in an href attribute: {raw}")
+
+    def test_only_known_schemes_are_emitted(self):
+        self.assertIn("function safeUrl(u)", self.template)
+        self.assertRegex(self.template, r"safeUrl[\s\S]{0,200}https\?\|mailto\|tel")
+
+
+class LiveProgressTests(_LocalServerTestCase):
+    """--serve polls CURRENT_STATE for crawl progress; it was declared but
+    never assigned, so the progress bar sat at zero for the whole crawl."""
+
+    def test_run_scan_publishes_the_live_crawl_state(self):
+        cli.CURRENT_STATE = None
+        args = argparse.Namespace(
+            mode="crawl", max_pages=50, max_depth=6, delay=0.0, workers=2,
+            user_agent="test-agent", state=None, fresh=False, verify=False,
+            json=None, markdown=None, html=None, serve=None,
+            max_duration=None, allow_private_ips=True)
+        payload = cli.run_scan(args, self.base, self.host)
+        self.assertIsNotNone(cli.CURRENT_STATE)
+        self.assertEqual(len(cli.CURRENT_STATE.found), payload["count"])

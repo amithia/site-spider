@@ -33,6 +33,23 @@ tagged or released to PyPI.
   discoverable. `--chromium-path` points it at an existing Chrome/Chromium
   install instead of downloading one.
 
+### Fixed
+- Sites that redirect apex to `www` (or vice versa) returned "No URLs
+  discovered". The two spellings are now treated as one site, and the crawl
+  adopts whichever host the base URL actually lands on — so later requests
+  skip the redirect hop and a generated `sitemap.xml` carries the canonical
+  host.
+- The interactive map escaped link *text* but not link *URLs*, so a URL
+  containing a quote could break out of an `href="..."` attribute and inject
+  markup into the map. URLs are now escaped and restricted to
+  `http`/`https`/`mailto`/`tel`.
+- `--serve`'s re-crawl progress always reported 0 pages: the live crawl state
+  the status endpoint reads was declared but never assigned.
+- When `robots.txt` advertised several sitemaps, only the first one that
+  returned any URLs was parsed and the rest were silently dropped. All
+  advertised sitemaps are now read, with the well-known paths kept as a
+  fallback.
+
 ## [0.1.0] - unreleased
 
 The original crawler: sitemap.xml discovery with BFS-crawl fallback and
