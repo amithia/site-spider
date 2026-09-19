@@ -278,7 +278,7 @@ def outbound_links(base_url: str, anchors: list[tuple[str, str]], host: str) -> 
         if scheme not in ("http", "https", "mailto", "tel"):
             continue
         if scheme in ("http", "https"):
-            absolute = normalize(absolute)
+            absolute = canonical_url(absolute, host)
         if absolute in seen:
             if text and not seen[absolute]["text"]:
                 seen[absolute]["text"] = text[:120]
@@ -302,8 +302,59 @@ def normalize(url: str) -> str:
     return urllib.parse.urlunsplit((parts.scheme, parts.netloc.lower(), path, "", ""))
 
 
+def _host_key(netloc: str) -> str:
+    """Collapse the apex/www alias pair into one key.
+
+    Sites routinely serve one and redirect the other (`example.com` ->
+    `www.example.com`), so treating the two as different hosts would
+    classify a site's own pages as offsite and find nothing at all.
+    """
+    host = netloc.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
 def same_host(url: str, host: str) -> bool:
-    return urllib.parse.urlsplit(url).netloc.lower() == host
+    return _host_key(urllib.parse.urlsplit(url).netloc) == _host_key(host)
+
+
+def canonical_url(url: str, host: str) -> str:
+    """normalize(), then re-anchor an apex/www alias onto `host`.
+
+    Without this a site linking to both spellings yields two entries for
+    every page, and the generated sitemap.xml would list URLs on whichever
+    host happened to be linked rather than the canonical one.
+    """
+    parts = urllib.parse.urlsplit(normalize(url))
+    if parts.netloc != host and _host_key(parts.netloc) == _host_key(host):
+        parts = parts._replace(netloc=host)
+    return urllib.parse.urlunsplit(parts)
+
+
+def resolve_base(base: str, host: str, user_agent: str) -> tuple[str, str]:
+    """Follow the base URL's redirects once and adopt where it lands.
+
+    A site that redirects apex -> www (or http -> https) should be crawled
+    and reported under the host it actually serves, so that every later
+    request skips the redirect hop and the emitted sitemap.xml carries the
+    canonical host. Falls back to the given base if the probe fails.
+    """
+    _data, status, _headers, final = fetch(base + "/", user_agent)
+    if not final or not status:
+        return base, host
+    final_host = urllib.parse.urlsplit(final).netloc.lower()
+    if not final_host or final_host == host:
+        return base, host
+    if _host_key(final_host) != _host_key(host):
+        # Landed on a genuinely different site (e.g. a parked-domain
+        # redirect). Crawling it would silently map something the user
+        # did not ask for, so stay put and say so.
+        log(f"  ! {base} redirects to {final_host}, a different site — "
+            f"crawling {host} as given")
+        return base, host
+    final_base = urllib.parse.urlunsplit(
+        (urllib.parse.urlsplit(final).scheme, final_host, "", "", ""))
+    log(f"  {host} redirects to {final_host} — crawling that instead")
+    return final_base, final_host
 
 
 # --- sitemap.xml discovery ---------------------------------------------------
@@ -343,20 +394,30 @@ def parse_sitemap(url: str, seen: set[str], page_urls: set[str], host: str,
         added = 0
         for loc in locs:
             if same_host(loc, host):
-                page_urls.add(normalize(loc))
+                page_urls.add(canonical_url(loc, host))
                 added += 1
         log(f"  sitemap: {url} (+{added} urls)")
 
 
 def collect_from_sitemaps(base: str, host: str, user_agent: str) -> set[str]:
-    candidates = sitemap_urls_from_robots(base, user_agent)
-    candidates += [urllib.parse.urljoin(base, p) for p in COMMON_SITEMAP_PATHS]
     page_urls: set[str] = set()
     seen: set[str] = set()
-    for url in candidates:
+
+    # robots.txt may advertise several sitemaps (one per section, per
+    # language, ...), so every one it lists is parsed — stopping at the
+    # first that returned anything would silently drop the rest.
+    from_robots = sitemap_urls_from_robots(base, user_agent)
+    for url in from_robots:
         parse_sitemap(url, seen, page_urls, host, user_agent)
+    if page_urls:
+        return page_urls
+
+    # Nothing advertised (or nothing usable): fall back to the well-known
+    # locations, where the first one that works is the site's sitemap.
+    for path in COMMON_SITEMAP_PATHS:
+        parse_sitemap(urllib.parse.urljoin(base, path), seen, page_urls, host, user_agent)
         if page_urls:
-            break  # first working sitemap wins; robots entries were tried first
+            break
     return page_urls
 
 
@@ -523,7 +584,7 @@ def crawl(base: str, host: str, seeds: set[str], state: CrawlState,
         workers = 1
 
     if not state.queue and not state.found:
-        start = normalize(base)
+        start = canonical_url(base, host)
         state.queue.append((start, 0))
         state.visited.add(start)
         for seed in sorted(seeds):
@@ -588,7 +649,7 @@ def crawl(base: str, host: str, seeds: set[str], state: CrawlState,
                     if cached.get("lastmod"):
                         cond["If-Modified-Since"] = cached["lastmod"]
                 data, status, rheaders, final = fetch(url, user_agent, cond or None)
-            final_url = normalize(final) if final else url
+            final_url = canonical_url(final, host) if final else url
             offsite = not same_host(final_url, host)
             links: list[str] = []
             out_links: list[dict] = []
@@ -656,7 +717,7 @@ def crawl(base: str, host: str, seeds: set[str], state: CrawlState,
                         absolute = urllib.parse.urljoin(final_url, href)
                         if not absolute.startswith(("http://", "https://")):
                             continue
-                        absolute = normalize(absolute)
+                        absolute = canonical_url(absolute, host)
                         path = urllib.parse.urlsplit(absolute).path
                         if not same_host(absolute, host) or SKIP_EXTENSIONS.search(path):
                             continue
@@ -843,9 +904,12 @@ def log_crawl_diff(diff: dict) -> None:
         log(f"  ... and {len(diff['removed']) - 25} more (see --json output under 'diff')")
 
 
+CURRENT_STATE: CrawlState | None = None  # live progress for --serve status polling
+
+
 def run_scan(args, base: str, host: str) -> dict:
     """Run the full sitemap+crawl pipeline and return the result payload."""
-    global _ALLOW_PRIVATE_TARGETS
+    global _ALLOW_PRIVATE_TARGETS, CURRENT_STATE
     _ALLOW_PRIVATE_TARGETS = getattr(args, "allow_private_ips", False)
 
     sitemap_urls: set[str] = set()
@@ -864,6 +928,7 @@ def run_scan(args, base: str, host: str) -> dict:
         log(f"BFS crawling {host} (max {args.max_pages} pages, depth {args.max_depth}, "
             f"~{args.delay}s between requests)...")
         state = CrawlState(args.state, fresh=args.fresh)
+        CURRENT_STATE = state  # so --serve's /api/status can report live progress
         crawled = crawl(base, host, seeds, state, args.max_pages, args.max_depth,
                         args.delay, args.user_agent, args.workers,
                         max_duration=getattr(args, "max_duration", None),
@@ -901,9 +966,6 @@ def render_html(payload: dict) -> str:
     html = resources.files("sitemap_generator").joinpath(
         "templates", "chart.html").read_text(encoding="utf-8")
     return html.replace("__DATA__", json.dumps(payload).replace("</", "<\\/"))
-
-
-CURRENT_STATE: CrawlState | None = None  # live progress for --serve status polling
 
 
 def serve_map(args, base: str, host: str, payload: dict, port: int) -> None:
@@ -1037,6 +1099,11 @@ def main() -> int:
     host = urllib.parse.urlsplit(base).netloc.lower()
     if not host:
         ap.error("base_url must include a scheme, e.g. https://example.com")
+
+    # Set before resolve_base(): its probe fetch goes through the same guard.
+    global _ALLOW_PRIVATE_TARGETS
+    _ALLOW_PRIVATE_TARGETS = args.allow_private_ips
+    base, host = resolve_base(base, host, args.user_agent)
 
     payload = run_scan(args, base, host)
     if not payload:

@@ -252,7 +252,19 @@ function buildModel(){
   return plain(root);
 }
 function count(n){ let c=n.page?1:0; for(const k of n.kids) c+=count(k); n.total=c; return c; }
-function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;');}
+// Escapes for both text and quoted-attribute contexts: crawled pages are
+// untrusted input, and a URL carrying a quote would otherwise break out of
+// an href="..." and inject attributes of its own.
+function esc(s){return String(s==null?'':s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+// Only ever emit schemes we deliberately support; anything else (data:,
+// javascript:, a scheme a redirect invented) becomes an inert link.
+function safeUrl(u){
+  const s = String(u==null?'':u);
+  return /^(https?|mailto|tel):/i.test(s) ? s : '#';
+}
+function hrefAttr(u){return esc(safeUrl(u));}
 function marks(n){
   return (n.nis?'<span class="nisdot" title="not in XML sitemap"></span>':'')+
          (n.noindex?'<span class="lock" title="noindex — asked to be hidden from search engines">🔒</span>':'');
@@ -260,7 +272,7 @@ function marks(n){
 function card(n,cls){
   const kids = n.kids.length>0;
   const label = n.url
-    ? `<a href="${n.url}" target="_blank" rel="noopener">${esc(n.name)}</a>`
+    ? `<a href="${hrefAttr(n.url)}" target="_blank" rel="noopener">${esc(n.name)}</a>`
     : esc(n.name);
   const linkCount = (D.links_out && D.links_out[n.url] || []).length;
   const linkbtn = (!editing && linkCount)
@@ -303,7 +315,7 @@ function render(){
   ).join('');
   document.getElementById('floatlist').innerHTML = floaters.map(v=>{
     const label = v.url
-      ? `<a href="${v.url}" ${editing?'draggable="true"':''} target="_blank" rel="noopener">${esc(v.name)}</a>`
+      ? `<a href="${hrefAttr(v.url)}" ${editing?'draggable="true"':''} target="_blank" rel="noopener">${esc(v.name)}</a>`
       : `<span ${editing?'draggable="true"':''}>${esc(v.name)}</span>`;
     return `<li data-id="${v.id}" class="${v.isNew?'newcard':''}">${marks(v)}${v.isNew?'<span class="tag newtag">planned</span>':''}${label}</li>`;
   }).join('');
@@ -348,14 +360,14 @@ function openLinkPanel(url){
   const items = (D.links_out && D.links_out[url]) || [];
   const internal = items.filter(l=>!l.external), external = items.filter(l=>l.external);
   document.getElementById('lptitle').textContent = url.replace(/^https?:\/\/[^/]+/,'') || '/';
-  document.getElementById('lpurl').innerHTML = `<a href="${url}" target="_blank" rel="noopener">${esc(url)}</a>`;
+  document.getElementById('lpurl').innerHTML = `<a href="${hrefAttr(url)}" target="_blank" rel="noopener">${esc(url)}</a>`;
   document.getElementById('lpsummary').textContent =
     `${items.length} link${items.length===1?'':'s'} found — ${internal.length} on this site, ${external.length} leaving it`;
   function list(entries, extraClass){
     if (!entries.length) return '';
     return `<ul>${entries.map(l=>{
       const label = l.text || l.url.replace(/^https?:\/\//,'').replace(/^mailto:/,'').replace(/^tel:/,'');
-      return `<li class="${extraClass||''}"><a href="${l.url}" target="_blank" rel="noopener">${esc(label)}`+
+      return `<li class="${extraClass||''}"><a href="${hrefAttr(l.url)}" target="_blank" rel="noopener">${esc(label)}`+
         `<span class="lp-href">${esc(l.url)}</span></a></li>`;
     }).join('')}</ul>`;
   }
