@@ -1,4 +1,4 @@
-# site-spider
+# Site Spider
 
 **Crawl a website and map what is really there — then check it against the site's own `sitemap.xml`.**
 
