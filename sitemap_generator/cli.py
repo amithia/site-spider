@@ -309,8 +309,7 @@ def _host_key(netloc: str) -> str:
     `www.example.com`), so treating the two as different hosts would
     classify a site's own pages as offsite and find nothing at all.
     """
-    host = netloc.lower()
-    return host[4:] if host.startswith("www.") else host
+    return netloc.lower().removeprefix("www.")
 
 
 def same_host(url: str, host: str) -> bool:
