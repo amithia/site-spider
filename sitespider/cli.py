@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Crawl a website and print its sitemap as a tree.
+"""site-spider — crawl a website and map what is really there.
 
 Works against any website. Uses only the Python standard library — no
 pip installs needed.
@@ -21,8 +21,8 @@ Politeness / safety (important on live sites):
     instead of re-hitting pages
 
 Usage:
-  sitemap-generator https://example.com             # auto mode
-  sitemap-generator https://example.com --mode hybrid \
+  site-spider https://example.com             # auto mode
+  site-spider https://example.com --mode hybrid \
       --state crawl-state.json --max-pages 3000 --delay 1.0 \
       --json sitemap.json
 """
@@ -52,9 +52,10 @@ from html.parser import HTMLParser
 from importlib import resources
 from xml.sax.saxutils import escape as xml_escape
 
-from sitemap_generator import __version__
+from sitespider import __version__
 
-DEFAULT_USER_AGENT = "sitemap-tree-crawler/1.1 (personal study tool; contact: set --user-agent)"
+DEFAULT_USER_AGENT = (f"site-spider/{__version__} "
+                      "(+https://github.com/amithia/site-spider; contact: set --user-agent)")
 COMMON_SITEMAP_PATHS = ["/sitemap.xml", "/sitemap_index.xml", "/sitemap/sitemap.xml"]
 SKIP_EXTENSIONS = re.compile(
     r"\.(pdf|jpe?g|png|gif|svg|webp|ico|css|js|mjs|json|xml|zip|gz|tar|mp[34]|"
@@ -495,7 +496,7 @@ class JSRenderer:
     """Fetches pages through a headless Chromium instance instead of raw
     HTTP, so links added to the DOM by client-side JavaScript are
     discoverable. Requires the `js` extra: `pip install
-    'sitemap-generator[js]'` then `playwright install chromium` (or point
+    'site-spider[js]'` then `playwright install chromium` (or point
     `--chromium-path` at an existing Chrome/Chromium binary to skip that
     download).
 
@@ -512,7 +513,7 @@ class JSRenderer:
         except ImportError as exc:
             raise RuntimeError(
                 "--render-js requires the 'js' extra: pip install "
-                "'sitemap-generator[js]' && playwright install chromium"
+                "'site-spider[js]' && playwright install chromium"
             ) from exc
         self._wait_ms = wait_ms
         self._pw = sync_playwright().start()
@@ -962,7 +963,7 @@ def run_scan(args, base: str, host: str) -> dict:
 
 
 def render_html(payload: dict) -> str:
-    html = resources.files("sitemap_generator").joinpath(
+    html = resources.files("sitespider").joinpath(
         "templates", "chart.html").read_text(encoding="utf-8")
     return html.replace("__DATA__", json.dumps(payload).replace("</", "<\\/"))
 
@@ -1030,7 +1031,10 @@ def serve_map(args, base: str, host: str, payload: dict, port: int) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Crawl a site and print its sitemap as a tree.")
+    ap = argparse.ArgumentParser(
+        prog="site-spider",
+        description="Crawl a website and map what is actually there, then cross-check "
+                    "it against the site's own sitemap.xml to show where the two disagree.")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("base_url", help="site to map, e.g. https://example.com")
     ap.add_argument("--mode", choices=["auto", "sitemap", "crawl", "hybrid"], default="auto",
@@ -1061,7 +1065,7 @@ def main() -> int:
                     help="fetch pages through a headless Chromium instance instead "
                          "of raw HTTP, so links added by client-side JavaScript are "
                          "discoverable; requires the 'js' extra (pip install "
-                         "'sitemap-generator[js]' && playwright install chromium) "
+                         "'site-spider[js]' && playwright install chromium) "
                          "and forces --workers 1")
     ap.add_argument("--chromium-path", metavar="PATH",
                     help="with --render-js: use this Chrome/Chromium executable "

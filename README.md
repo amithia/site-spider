@@ -1,4 +1,6 @@
-# sitemap-generator
+# site-spider
+
+**Crawl a website and map what is really there — then check it against the site's own `sitemap.xml`.**
 
 Map any website and turn it into a real sitemap: an ASCII tree, a Markdown
 outline, or an interactive flowchart you can explore, reorganise, and export.
@@ -8,7 +10,7 @@ Python standard library only at runtime — no dependencies, just Python 3.10+.
 
 ```bash
 pipx install .   # or: pip install .
-sitemap-generator https://example.com
+site-spider https://example.com
 ```
 
 Running straight from a repo checkout without installing also works:

@@ -1,4 +1,4 @@
-"""Tests for sitemap_generator.cli.
+"""Tests for sitespider.cli.
 
 Stdlib unittest only, matching the project's zero-dependency ethos —
 run with `python3 -m unittest discover` (no pip installs needed).
@@ -18,7 +18,7 @@ import unittest
 from typing import ClassVar
 from unittest.mock import patch
 
-from sitemap_generator import cli
+from sitespider import cli
 
 _PLAYWRIGHT_AVAILABLE = importlib.util.find_spec("playwright") is not None
 
@@ -658,7 +658,7 @@ class TemplateEscapingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from importlib import resources
-        cls.template = resources.files("sitemap_generator").joinpath(
+        cls.template = resources.files("sitespider").joinpath(
             "templates", "chart.html").read_text(encoding="utf-8")
 
     def test_quotes_survive_normalization_and_so_must_be_escaped(self):
