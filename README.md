@@ -1,4 +1,4 @@
-# sitespider
+# site-spider
 
 **Crawl a website and map what is really there — then check it against the site's own `sitemap.xml`.**
 
@@ -10,7 +10,7 @@ Python standard library only at runtime — no dependencies, just Python 3.10+.
 
 ```bash
 pipx install .   # or: pip install .
-sitespider https://example.com
+site-spider https://example.com
 ```
 
 Running straight from a repo checkout without installing also works:

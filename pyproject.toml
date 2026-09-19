@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sitespider"
+name = "site-spider"
 version = "0.1.0"
 description = "Crawl a website and map what is really there, then cross-check it against the site's own sitemap.xml"
 readme = "README.md"
@@ -17,9 +17,12 @@ dev = ["ruff==0.16.3"]
 js = ["playwright>=1.40"]
 
 [project.urls]
-Homepage = "https://github.com/amithia/sitespider"
+Homepage = "https://github.com/amithia/site-spider"
 
 [project.scripts]
+# Hyphenated is the documented name; the unhyphenated alias is kept
+# because it is what people type, and both are ours on PyPI.
+"site-spider" = "sitespider.cli:main"
 sitespider = "sitespider.cli:main"
 
 [tool.setuptools.packages.find]

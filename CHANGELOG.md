@@ -11,9 +11,11 @@ Nothing published yet — everything below has landed on `main` but hasn't been
 tagged or released to PyPI.
 
 ### Changed
-- **Renamed to `sitespider`.** The old name was generic and already taken on
-  PyPI, so it could never have been published under it. The Python package,
-  the console script and the default User-Agent are all `sitespider` now;
+- **Renamed to `site-spider`.** The old name was generic and already taken on
+  PyPI, so the project could never have been published under it. The
+  distribution, the console command and the default User-Agent are all
+  `site-spider` now. The import package is `sitespider` (Python module names
+  cannot contain a hyphen) and `sitespider` also works as a command alias.
   `crawl_sitemap.py` still works for anyone running from a checkout.
 
 ### Added
