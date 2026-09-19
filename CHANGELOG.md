@@ -11,12 +11,23 @@ Nothing published yet — everything below has landed on `main` but hasn't been
 tagged or released to PyPI.
 
 ### Changed
+- `project.license` now uses the PEP 639 SPDX form (`license = "MIT"` plus
+  `license-files`). The old TOML-table form was deprecated and stops being
+  supported after 2027-02-18.
 - **Renamed to `site-spider`.** The old name was generic and already taken on
   PyPI, so the project could never have been published under it. The
   distribution, the console command and the default User-Agent are all
   `site-spider` now. The import package is `sitespider` (Python module names
   cannot contain a hyphen) and `sitespider` also works as a command alias.
   `crawl_sitemap.py` still works for anyone running from a checkout.
+
+- PyPI packaging metadata: keywords and trove classifiers, and a
+  `Release` workflow that publishes to PyPI on a `v*` tag via trusted
+  publishing (OIDC, no stored API token). The workflow refuses to publish
+  if the tag and `pyproject.toml` version disagree, runs `twine check
+  --strict`, and verifies the HTML template is present in both the wheel
+  and the sdist.
+- Python 3.13 added to the CI matrix, and declared in the classifiers.
 
 ### Added
 - Installable CLI: `pyproject.toml` with a `sitemap-generator` console_scripts

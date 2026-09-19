@@ -1,0 +1,80 @@
+name: Release
+
+# Publishes to PyPI when a version tag is pushed. Tag and package version
+# must agree — the build job fails loudly if they drift, because a wheel
+# whose version doesn't match its tag is unfixable once uploaded (PyPI
+# does not allow re-uploading a version).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          version="$(python3 -c 'import tomllib,pathlib; \
+            print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag v$tag does not match pyproject version $version"
+            exit 1
+          fi
+          echo "tag and version agree: $version"
+
+      - name: Build sdist and wheel
+        run: |
+          python3 -m pip install --upgrade build twine
+          python3 -m build
+
+      - name: Check the artifacts are well formed
+        run: python3 -m twine check --strict dist/*
+
+      - name: Confirm the HTML template is packaged
+        # The interactive map is loaded from package data at runtime; a wheel
+        # missing it installs fine and then fails on --html/--serve.
+        run: |
+          python3 - <<'PY'
+          import glob, zipfile, tarfile, sys
+          wheel = glob.glob("dist/*.whl")[0]
+          sdist = glob.glob("dist/*.tar.gz")[0]
+          in_wheel = any("templates/chart.html" in n for n in zipfile.ZipFile(wheel).namelist())
+          in_sdist = any("templates/chart.html" in n for n in tarfile.open(sdist).getnames())
+          print(f"wheel={in_wheel} sdist={in_sdist}")
+          sys.exit(0 if (in_wheel and in_sdist) else 1)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Trusted publishing: PyPI verifies this workflow's OIDC identity, so no
+    # API token is stored in the repo. Configure it at
+    # https://pypi.org/manage/project/site-spider/settings/publishing/
+    # with owner amithia, repo site-spider, workflow release.yml, environment pypi.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/site-spider
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
