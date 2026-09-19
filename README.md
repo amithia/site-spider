@@ -130,6 +130,53 @@ crawl budget and contradicts the tag.
 python3 crawl_sitemap.py https://example.com --mode hybrid --sitemap-xml sitemap.xml
 ```
 
+## Using it as a CI gate
+
+`--diff-against` and `--verify` report what they find, but both exit `0`, so
+on their own they can't fail a build. The gate flags make them enforceable:
+
+- `--fail-on-removed` (with `--diff-against`) exits `3` if any URL in the
+  previous snapshot is missing from this crawl — pages disappeared.
+- `--fail-on-gaps` exits `3` if coverage verification finds internal links
+  that were never reached, never excluded by `robots.txt` and never logged
+  as a failure. Implies `--verify`.
+
+```yaml
+# .github/workflows/sitemap.yml
+- run: |
+    site-spider https://example.com --mode hybrid \
+      --diff-against snapshot.json --json snapshot.json \
+      --fail-on-removed --fail-on-gaps
+```
+
+Exit codes:
+
+| Code | Meaning |
+|------|---------|
+| `0`  | crawl completed, no gate tripped |
+| `1`  | no URLs discovered |
+| `2`  | usage error (argparse) |
+| `3`  | a gate tripped: pages removed, or unexplained coverage gaps |
+
+`3` is used rather than `2` so a tripped gate is distinguishable from a
+mistyped flag — otherwise a CI job can't tell "the site changed" from "the
+command was wrong".
+
+## Crawling sites that use query strings
+
+Query strings are stripped by default, because faceted search, sort orders
+and session ids multiply one page into thousands of URLs — the classic way
+a crawl runs away. Sites that genuinely address distinct pages through
+parameters (`?id=`, `?page=`) need `--keep-query`:
+
+```bash
+site-spider https://example.com --keep-query --max-pages 2000
+```
+
+Parameters are sorted, so `?a=1&b=2` and `?b=2&a=1` collapse into one URL
+rather than two. Keep `--max-pages` tight when using this — it removes the
+main brake on a runaway crawl.
+
 ## Diffing crawls over time
 
 `--diff-against FILE` compares this crawl's URLs against a previous

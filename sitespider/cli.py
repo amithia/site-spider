@@ -62,6 +62,15 @@ SKIP_EXTENSIONS = re.compile(
     r"avi|mov|docx?|xlsx?|pptx?|woff2?|ttf|eot)$",
     re.IGNORECASE,
 )
+# Exit codes. A CI job needs to tell "the crawl found something you asked to
+# be warned about" apart from "the crawl itself failed" or "you passed the
+# wrong flags". 2 is skipped deliberately: argparse exits with it on a usage
+# error, so reusing it for a tripped gate would make the two indistinguishable
+# to the very CI job these flags exist for.
+EXIT_OK = 0
+EXIT_NO_URLS = 1
+EXIT_GATE_TRIPPED = 3
+
 MAX_CONSECUTIVE_FAILURES = 15  # abort threshold: the site is probably blocking us
 FETCH_RETRIES = 3
 
@@ -69,6 +78,11 @@ FETCH_RETRIES = 3
 # Left False by default so a crawl (or a redirect hit mid-crawl) can't be
 # steered at internal infrastructure or a cloud metadata endpoint.
 _ALLOW_PRIVATE_TARGETS = False
+
+# Set from --keep-query before any crawling starts (see run_scan()). Left
+# False so the default crawl can't be multiplied out by faceted-search or
+# pagination parameters.
+_KEEP_QUERY = False
 
 
 def log(msg: str) -> None:
@@ -294,13 +308,27 @@ def outbound_links(base_url: str, anchors: list[tuple[str, str]], host: str) -> 
     return list(seen.values())
 
 
-def normalize(url: str) -> str:
-    """Strip fragments and query strings, collapse trailing slashes."""
+def normalize(url: str, keep_query: bool | None = None) -> str:
+    """Strip the fragment, collapse trailing slashes, and drop the query.
+
+    Query strings are dropped by default because they are how a crawl runs
+    away: faceted search, sort orders, pagination and session ids multiply
+    one page into thousands of URLs. Sites that genuinely address distinct
+    pages that way (?id=, ?page=) need --keep-query, which keeps the query
+    with its parameters sorted, so ?a=1&b=2 and ?b=2&a=1 collapse into one
+    URL instead of two.
+    """
+    if keep_query is None:
+        keep_query = _KEEP_QUERY
     parts = urllib.parse.urlsplit(url)
     path = re.sub(r"/{2,}", "/", parts.path) or "/"
     if path != "/" and path.endswith("/"):
         path = path.rstrip("/")
-    return urllib.parse.urlunsplit((parts.scheme, parts.netloc.lower(), path, "", ""))
+    query = ""
+    if keep_query and parts.query:
+        query = urllib.parse.urlencode(
+            sorted(urllib.parse.parse_qsl(parts.query, keep_blank_values=True)))
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc.lower(), path, query, ""))
 
 
 def _host_key(netloc: str) -> str:
@@ -317,14 +345,14 @@ def same_host(url: str, host: str) -> bool:
     return _host_key(urllib.parse.urlsplit(url).netloc) == _host_key(host)
 
 
-def canonical_url(url: str, host: str) -> str:
+def canonical_url(url: str, host: str, keep_query: bool | None = None) -> str:
     """normalize(), then re-anchor an apex/www alias onto `host`.
 
     Without this a site linking to both spellings yields two entries for
     every page, and the generated sitemap.xml would list URLs on whichever
     host happened to be linked rather than the canonical one.
     """
-    parts = urllib.parse.urlsplit(normalize(url))
+    parts = urllib.parse.urlsplit(normalize(url, keep_query))
     if parts.netloc != host and _host_key(parts.netloc) == _host_key(host):
         parts = parts._replace(netloc=host)
     return urllib.parse.urlunsplit(parts)
@@ -909,8 +937,9 @@ CURRENT_STATE: CrawlState | None = None  # live progress for --serve status poll
 
 def run_scan(args, base: str, host: str) -> dict:
     """Run the full sitemap+crawl pipeline and return the result payload."""
-    global _ALLOW_PRIVATE_TARGETS, CURRENT_STATE
+    global _ALLOW_PRIVATE_TARGETS, _KEEP_QUERY, CURRENT_STATE
     _ALLOW_PRIVATE_TARGETS = getattr(args, "allow_private_ips", False)
+    _KEEP_QUERY = getattr(args, "keep_query", False)
 
     sitemap_urls: set[str] = set()
     if args.mode in ("auto", "sitemap", "hybrid"):
@@ -1083,6 +1112,21 @@ def main() -> int:
                     help="after crawling, cross-check that every internal link found on any "
                          "crawled page is accounted for (crawled, robots.txt-excluded, or a "
                          "logged fetch failure) and report anything left unexplained")
+    ap.add_argument("--keep-query", action="store_true",
+                    help="keep query strings instead of stripping them, for sites "
+                         "that address distinct pages via parameters (?id=, ?page=). "
+                         "Parameters are sorted so ?a=1&b=2 and ?b=2&a=1 are one URL. "
+                         "Raises the risk of a runaway crawl on faceted search, so "
+                         "keep --max-pages tight when using it")
+    ap.add_argument("--fail-on-removed", action="store_true",
+                    help=f"with --diff-against: exit {EXIT_GATE_TRIPPED} if any URL "
+                         "present in the previous snapshot is missing from this crawl. "
+                         "This is what makes a scheduled crawl a CI gate rather than "
+                         "a report nobody reads")
+    ap.add_argument("--fail-on-gaps", action="store_true",
+                    help=f"exit {EXIT_GATE_TRIPPED} if coverage verification finds "
+                         "internal links that were never reached, never excluded by "
+                         "robots.txt and never logged as a failure. Implies --verify")
     ap.add_argument("--json", metavar="FILE", help="also write the tree + URL list as JSON")
     ap.add_argument("--markdown", metavar="FILE", help="also write the tree as a Markdown outline")
     ap.add_argument("--sitemap-xml", metavar="FILE",
@@ -1102,6 +1146,11 @@ def main() -> int:
     host = urllib.parse.urlsplit(base).netloc.lower()
     if not host:
         ap.error("base_url must include a scheme, e.g. https://example.com")
+    if args.fail_on_removed and not args.diff_against:
+        ap.error("--fail-on-removed needs --diff-against FILE to compare against")
+    if args.fail_on_gaps:
+        # Wanting to fail on gaps is a strict superset of wanting the report.
+        args.verify = True
 
     # Set before resolve_base(): its probe fetch goes through the same guard.
     global _ALLOW_PRIVATE_TARGETS
@@ -1111,7 +1160,7 @@ def main() -> int:
     payload = run_scan(args, base, host)
     if not payload:
         log("No URLs discovered.")
-        return 1
+        return EXIT_NO_URLS
 
     print(render_ascii(payload["tree"], base))
     log(f"\n{payload['count']} URLs discovered.")
@@ -1143,9 +1192,21 @@ def main() -> int:
         with open(args.html, "w", encoding="utf-8") as f:
             f.write(render_html(payload))
         log(f"Interactive map written to {args.html}")
+    exit_code = EXIT_OK
+    removed = payload.get("diff", {}).get("removed", [])
+    if args.fail_on_removed and removed:
+        log(f"\nFAIL: {len(removed)} URL(s) present in {args.diff_against} are gone "
+            "from this crawl (--fail-on-removed).")
+        exit_code = EXIT_GATE_TRIPPED
+    gaps = payload.get("verify", {}).get("unresolved_internal_links", [])
+    if args.fail_on_gaps and gaps:
+        log(f"\nFAIL: {len(gaps)} internal link(s) were never reached and are "
+            "unaccounted for (--fail-on-gaps).")
+        exit_code = EXIT_GATE_TRIPPED
+
     if args.serve is not None:
         serve_map(args, base, host, payload, args.serve)
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
